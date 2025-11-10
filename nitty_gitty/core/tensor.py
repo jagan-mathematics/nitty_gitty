@@ -1,6 +1,4 @@
 import uuid
-
-from ..ops import activation_op
 from .device import check_device_compatibility, get_array_module, is_cuda_available, Device, normalize_device, normalize_dtype
 from .device import get_numpy_engine, get_cupy_engine
 from .auto_grad import Context
@@ -43,6 +41,10 @@ class Tensor:
 
     def zero_grad(self):
         self.grad = None
+    
+    @property
+    def numel(self):
+        return self.data.size
     
     @property
     def device(self):
@@ -260,7 +262,7 @@ class Tensor:
         return apply_op(basic_op.Sum, self, axis=axis, keepdims=keepdims)
     
     def relu(self):
-        return apply_op(activation_op.ReLU, self)
+        return apply_op(basic_op.ReLU, self)
     
     def exp(self):
         return apply_op(basic_op.Exp, self)

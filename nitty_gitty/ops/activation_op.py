@@ -2,7 +2,7 @@ from ..core.device import check_device_compatibility, get_array_module
 from ..core.auto_grad import AutoGradFunction
 
 
-class ReLU(AutoGradFunction):
+class ReLUOp(AutoGradFunction):
     """
     Rectified Linear Unit (ReLU)
 
@@ -25,7 +25,7 @@ class ReLU(AutoGradFunction):
         return grad_output * mask
     
 
-class Sigmoid(AutoGradFunction):
+class SigmoidOp(AutoGradFunction):
     """
     Sigmoid activation
 
@@ -49,7 +49,7 @@ class Sigmoid(AutoGradFunction):
         return grad_output * activation_output * (1 - activation_output)
     
 
-class TanH(AutoGradFunction):
+class TanHOp(AutoGradFunction):
     """
     Hyperbolic Tangent (Tanh)
 
@@ -73,7 +73,7 @@ class TanH(AutoGradFunction):
         return grad_output * (1.0 - (activation_output * activation_output))
 
 
-class SoftSign(AutoGradFunction):
+class SoftSignOp(AutoGradFunction):
     """
     SoftSign activation
 
@@ -106,7 +106,7 @@ class SoftSign(AutoGradFunction):
         return grad_output * (1.0 / denom)
 
 
-class SoftPlus(AutoGradFunction):
+class SoftPlusOp(AutoGradFunction):
     """
     SoftPlus activation
 
@@ -132,7 +132,7 @@ class SoftPlus(AutoGradFunction):
         return grad_output * grad_a
     
 
-class LeakyReLU(AutoGradFunction):
+class LeakyReLUOp(AutoGradFunction):
     """
     Leaky ReLU
 
@@ -159,7 +159,7 @@ class LeakyReLU(AutoGradFunction):
         return grad_output * grad_a
     
 
-class PReLU(AutoGradFunction):
+class PReLUOp(AutoGradFunction):
     """
     Parametric ReLU
 
@@ -175,20 +175,78 @@ class PReLU(AutoGradFunction):
         # a_param expected to be scalar or broadcastable
         check_device_compatibility(a)
         xp = get_array_module(a)
-        mask = a > 0
-        out = xp.where(mask, a, a_param * a)
-        ctx.save_for_backward(a, mask, a_param)
+
+        if isinstance(a, (int, float)):
+            raise ValueError(f"prelu: Expected `a` to be tensor, but got: {type(a)}")
+
+        if isinstance(a_param, (int, float)):  # Allow scalar-like
+            raise ValueError(f"prelu: Expected `weight` to be tensor or scalar, but got: {type(a_param)}")
+
+
+        w_numel = 1
+        if hasattr(a_param, 'size'):
+            w_numel = a_param.size 
+        elif hasattr(a_param, "numel"):
+            w_numel = a_param.numel 
+
+
+        if w_numel != 1:
+            if a.ndim == 0:
+                raise ValueError("Not allowed zero-dim input tensor when weight.numel() != 1.")
+            channel_size = a.shape[1] if a.ndim >= 2 else 1
+            if w_numel != channel_size:
+                raise ValueError(
+                    f"Mismatch of parameter numbers and input channel size. "
+                    f"Found parameter numbers = {w_numel} and channel size = {channel_size}."
+                )
+            
+        if a_param.ndim not in (0, 1):
+            raise ValueError(
+                f"prelu: Expected `weight` to be a scalar or 1D tensor, but got: ndim = {a_param.ndim}"
+            )
+            
+        if a.ndim == 0:
+            a_param_broadcast = a_param.flatten()[0] if a_param.ndim == 1 else a_param
+        else:
+            if a_param.ndim == 0:
+                a_param_broadcast = a_param
+            else:
+                if a.ndim == 1:
+                    a_param_broadcast = xp.tile(a_param, a.shape[0])
+                else:
+                    axes_to_insert = (0,) + tuple(range(2, a.ndim))
+                    w_base = xp.expand_dims(a_param, axis=axes_to_insert)
+                    target_shape = (a.shape[0],) + w_base.shape[1:]
+                    a_param_broadcast = xp.broadcast_to(w_base, target_shape)
+                    
+        mask = a > 0.0
+        out = xp.where(mask, a, a_param_broadcast * a)
+        ctx.save_for_backward(a, mask, a_param_broadcast)
+        ctx.register_arg("num_parameters", w_numel)
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        (a, mask, a_param) = ctx.saved_tensors
+        (a, mask, a_param_broadcast) = ctx.saved_tensors
         xp = get_array_module(mask)
-        grad_a = xp.where(mask, 1.0, a_param) * grad_output
-        grad_param = xp.sum(grad_output * xp.where(mask, 0.0, a)) * grad_output
+        num_param = ctx.get_arg("num_parameters") or a_param_broadcast.shape[0]
+        grad_a = xp.where(mask, 1.0, a_param_broadcast) * grad_output
+        
+        contrib = grad_output * xp.where(mask, 0.0, a)
+        n_dim = a.ndim
+        if num_param == 1:
+            total_grad = xp.sum(contrib)
+            grad_param = xp.full(a_param_broadcast.shape, total_grad)
+        else:
+            if n_dim < 2:
+                grad_param = contrib
+            else:
+                axes = tuple(i for i in range(n_dim) if i != 1)
+                grad_param = xp.sum(contrib, axis=axes)
         return grad_a, grad_param
 
-class RRelu(AutoGradFunction):
+
+class RReluOp(AutoGradFunction):
     """
     Randomized Leaky ReLU
 
@@ -199,22 +257,28 @@ class RRelu(AutoGradFunction):
         dy/dx = 1 if x > 0 else r_value
     """
     @staticmethod
-    def forward(ctx, a, r_value):
+    def forward(ctx, a, lower, upper, training):
         check_device_compatibility(a)
         xp = get_array_module(a)
-        out = xp.where(a > 0, a, r_value * a)
-        ctx.save_for_backward((a > 0), r_value)
+        mask = a > 0
+        if training:
+            r_value = xp.random.uniform(lower, upper, a.shape)
+        else:
+            r_value = lower + upper / 2.0
+
+        out = xp.where(mask, a, r_value * a)
+        ctx.save_for_backward(a, mask, r_value)
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        mask, r_value = ctx.saved_tensors
+        a, mask, r_value = ctx.saved_tensors
         xp = get_array_module(grad_output)
         grad = xp.where(mask, 1.0, r_value)
         return grad_output * grad
     
 
-class ELU(AutoGradFunction):
+class ELUOp(AutoGradFunction):
     """
     Exponential Linear Unit
 
@@ -243,7 +307,7 @@ class ELU(AutoGradFunction):
         return grad_output * grad_input
     
 
-class SELU(AutoGradFunction):
+class SELUOp(AutoGradFunction):
     """
     Scaled Exponential Linear Unit
 
@@ -272,7 +336,7 @@ class SELU(AutoGradFunction):
         return grad_output * grad_input
     
 
-class GELU(AutoGradFunction):
+class GELUOp(AutoGradFunction):
     """
     Gaussian Error Linear Unit (approximation)
 
@@ -307,7 +371,7 @@ class GELU(AutoGradFunction):
         return grad_output * grad
     
 
-class SiLU(AutoGradFunction): #SiLU / Swish
+class SiLUOp(AutoGradFunction): #SiLU / Swish
     """
     Sigmoid Linear Unit (Swish)
 
@@ -333,7 +397,7 @@ class SiLU(AutoGradFunction): #SiLU / Swish
         return grad_output * grad
     
 
-class Mish(AutoGradFunction):
+class MishOp(AutoGradFunction):
     """
     Mish activation
 
@@ -363,7 +427,7 @@ class Mish(AutoGradFunction):
         return grad_output * grad
     
 
-class SoftMax(AutoGradFunction):
+class SoftMaxOp(AutoGradFunction):
     """
     SoftMax activation
 
@@ -396,7 +460,7 @@ class SoftMax(AutoGradFunction):
     
 
 
-class GLU(AutoGradFunction):
+class GLUOp(AutoGradFunction):
     """
     Gated Linear Unit
 
@@ -424,7 +488,7 @@ class GLU(AutoGradFunction):
         return grad_a, grad_b
     
 
-class SwiGLU(AutoGradFunction):
+class SwiGLUOp(AutoGradFunction):
     """
     SwiGLU activation
 
