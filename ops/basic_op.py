@@ -1,7 +1,6 @@
 from ..core.auto_grad import AutoGradFunction
-from ..core.device import check_device_compatibility, get_array_module, get_cupy_engine, get_numpy_engine
+from ..core.device import check_device_compatibility, get_array_module
 from ..core.exceptions import OpGradNonImplemented
-from ..core.utils import reduce_broadcast
 
 
 class Add(AutoGradFunction):
@@ -13,7 +12,6 @@ class Add(AutoGradFunction):
 
     @staticmethod
     def backward(ctx, grad_output):
-        a, b = ctx.saved_tensors
         return grad_output, grad_output
 
 
@@ -105,21 +103,6 @@ class Sum(AutoGradFunction):
         xp = get_array_module(a)
         grad = xp.ones_like(a) * grad_output
         return grad
-
-
-
-class ReLU(AutoGradFunction):
-    @staticmethod
-    def forward(ctx, a):
-        check_device_compatibility(a)
-        mask = (a > 0).astype(a.dtype)
-        ctx.save_for_backward(mask)
-        return a * mask
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        (mask,) = ctx.saved_tensors
-        return grad_output * mask
 
 
 class Exp(AutoGradFunction):
