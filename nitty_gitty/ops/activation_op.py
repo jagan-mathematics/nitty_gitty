@@ -366,7 +366,8 @@ class GELUOp(AutoGradFunction):
 
         sech2 = 1.0 - tanh_inner * tanh_inner
         term1 = 0.5 * (1.0 + tanh_inner)
-        term2 = 0.5 * a * (sech2 * (c * 1.0 + 3.0 * 0.044715 * xp.power(a, 2)))
+        deriv_inner = 1.0 + 3.0 * 0.044715 * xp.power(a, 2)
+        term2 = 0.5 * a * (sech2 * c * deriv_inner)
         grad = term1 + term2
         return grad_output * grad
     
